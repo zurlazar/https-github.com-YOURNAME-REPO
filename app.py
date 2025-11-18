@@ -9,7 +9,7 @@ from dash.dependencies import Input, Output
 # CONFIGURATION
 # -------------------------------------------------------------
 # Set the CSV file path (file must be inside the same folder OR use a URL)
-CSV_FILE = r"P:\Optics R&D\Projects\Harmony\Harmony XL Next Gen\Ex vivo China Harmony\acne high after 1.csv"
+CSV_FILE = "acne high after 1.csv"
 
 
 # -------------------------------------------------------------
@@ -159,3 +159,4 @@ def display_selected_data(selectedData):
 # -------------------------------------------------------------
 if __name__ == "__main__":
     app.run_server(host="0.0.0.0", port=8050, debug=True)
+
