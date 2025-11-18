@@ -2,44 +2,39 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import dash
+import os
 from dash import Dash, dcc, html
-from dash.dependencies import Input, Output
+from dash.dependencies import Input, Output, State
 
 # -------------------------------------------------------------
-# CONFIGURATION
+# CSV LISTING
 # -------------------------------------------------------------
-# Set the CSV file path (file must be inside the same folder OR use a URL)
-CSV_FILE = "acne high after 1.csv"
+def list_csv_files(folder="."):
+    return [f for f in os.listdir(folder) if f.lower().endswith(".csv")]
 
+CSV_FILES = list_csv_files(".")
+if not CSV_FILES:
+    raise RuntimeError("❌ No CSV files found in folder.")
 
 # -------------------------------------------------------------
 # LOAD DATA
 # -------------------------------------------------------------
 def load_flir_csv(file_path):
-    """
-    Loads FLIR ResearchIR CSV file into a 2D NumPy array.
-    Adjust skiprows if your CSV structure differs.
-    """
     try:
         df = pd.read_csv(file_path, header=None, skiprows=10)
         data = df.values.astype(float)
-        print(f"Loaded CSV successfully. Shape = {data.shape}")
+        print(f"Loaded CSV: {file_path}  Shape={data.shape}")
         return data
     except Exception as e:
         print("Error loading CSV:", e)
         return None
 
-
-thermal_data = load_flir_csv(CSV_FILE)
-
-if thermal_data is None:
-    raise RuntimeError("❌ Cannot run app — data failed to load.")
-
+# load first CSV initially
+thermal_data = load_flir_csv(CSV_FILES[0])
 rows, cols = thermal_data.shape
 
-
 # -------------------------------------------------------------
-# CREATE HEATMAP FIG
+# CREATE FIGURE
 # -------------------------------------------------------------
 def create_heatmap(data):
     MIN_TEMP = np.nanmin(data)
@@ -53,31 +48,33 @@ def create_heatmap(data):
         title="FLIR Thermal Heatmap — Select an Area",
         labels={'x': 'X Pixel', 'y': 'Y Pixel', 'color': 'Temperature'}
     )
-
-    fig.update_layout(
-        dragmode="select",
-        margin=dict(l=10, r=10, t=40, b=10),
-        hovermode="closest"
-    )
-
+    fig.update_layout(dragmode="select", margin=dict(l=10, r=10, t=40, b=10))
     return fig
 
 
-heatmap_figure = create_heatmap(thermal_data)
-
-
 # -------------------------------------------------------------
-# DASH APP LAYOUT
+# DASH APP
 # -------------------------------------------------------------
 app = Dash(__name__)
-server = app.server  # For Render deployment
+server = app.server
 
 app.layout = html.Div([
     html.H2("FLIR Thermal Image Analyzer", style={'textAlign': 'center'}),
 
+    # ---------------------------- CSV SELECTOR ----------------------------
+    html.Div([
+        html.Label("Select CSV File:"),
+        dcc.Dropdown(
+            id="csv-selector",
+            options=[{"label": f, "value": f} for f in CSV_FILES],
+            value=CSV_FILES[0],
+            clearable=False
+        )
+    ], style={'width': '40%', 'margin': 'auto'}),
+
     dcc.Graph(
         id="thermal-heatmap",
-        figure=heatmap_figure,
+        figure=create_heatmap(thermal_data),
         config={"scrollZoom": True, "displayModeBar": True}
     ),
 
@@ -89,12 +86,33 @@ app.layout = html.Div([
         'textAlign': 'center'
     }),
 
-    html.Div(f"Image size: {cols} × {rows} pixels", style={'textAlign': 'center', 'marginTop': '10px'})
+    html.Div(id="image-size-text", style={
+        'textAlign': 'center',
+        'marginTop': '10px'
+    })
 ])
 
 
 # -------------------------------------------------------------
-# CALLBACK — CALCULATE MEAN / MIN / MAX
+# CALLBACK — CHANGE CSV FILE & UPDATE HEATMAP
+# -------------------------------------------------------------
+@app.callback(
+    Output("thermal-heatmap", "figure"),
+    Output("image-size-text", "children"),
+    Input("csv-selector", "value"),
+)
+def update_file(selected_csv):
+    global thermal_data, rows, cols
+
+    thermal_data = load_flir_csv(selected_csv)
+    rows, cols = thermal_data.shape
+
+    fig = create_heatmap(thermal_data)
+    return fig, f"Image size: {cols} × {rows} pixels"
+
+
+# -------------------------------------------------------------
+# CALLBACK — CALCULATE MEAN/MIN/MAX
 # -------------------------------------------------------------
 @app.callback(
     Output("mean-temp-output", "children"),
@@ -105,28 +123,24 @@ def display_selected_data(selectedData):
         return "👉 Select a region on the heatmap."
 
     try:
-        # -----------------------------------------------
-        # Case 1: Box selection gives "range"
-        # -----------------------------------------------
+        global thermal_data, rows, cols
+
+        # Box range
         if "range" in selectedData:
             xr = selectedData["range"]["x"]
             yr = selectedData["range"]["y"]
             x_min, x_max = int(xr[0]), int(xr[1])
             y_min, y_max = int(yr[0]), int(yr[1])
-
-        # -----------------------------------------------
-        # Case 2: Fallback to "points" list
-        # -----------------------------------------------
+        # Points fallback
         elif "points" in selectedData and selectedData["points"]:
             xs = [p["x"] for p in selectedData["points"]]
             ys = [p["y"] for p in selectedData["points"]]
             x_min, x_max = min(xs), max(xs)
             y_min, y_max = min(ys), max(ys)
-
         else:
-            return "⚠️ Nothing selected — try drawing a box."
+            return "⚠️ Nothing selected — try box select."
 
-        # Clamp to valid boundaries
+        # Clamp
         x_min = max(0, int(np.floor(x_min)))
         x_max = min(cols - 1, int(np.ceil(x_max)))
         y_min = max(0, int(np.floor(y_min)))
@@ -139,7 +153,6 @@ def display_selected_data(selectedData):
         max_val = float(np.max(region))
         pixels = region.size
 
-        # Print to server logs
         print(f"[REGION] mean={mean_val:.3f}, min={min_val:.3f}, max={max_val:.3f}, pixels={pixels}")
 
         return html.Div([
@@ -155,8 +168,7 @@ def display_selected_data(selectedData):
 
 
 # -------------------------------------------------------------
-# MAIN ENTRY (important for deployment)
+# MAIN ENTRY
 # -------------------------------------------------------------
 if __name__ == "__main__":
     app.run_server(host="0.0.0.0", port=8050, debug=True)
-
