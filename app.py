@@ -15,7 +15,9 @@ def list_csv_files(folder="."):
 
 CSV_FILES = list_csv_files(".")
 if not CSV_FILES:
-    raise RuntimeError("❌ No CSV files found in folder.")
+    # Use a dummy entry to prevent startup failure if no files are present
+    print("❌ No CSV files found in folder. Using default empty state.")
+    CSV_FILES = ["default.csv"]
 
 # Global variables to store the currently loaded data
 thermal_data = None
@@ -30,29 +32,43 @@ def load_flir_csv(file_path):
     Loads FLIR ResearchIR CSV file into a 2D NumPy array.
     Updates the global thermal_data and shape variables.
     """
+    # Define thermal_data, rows, and cols as global inside the function
+    global thermal_data, rows, cols
+    
+    if file_path == "default.csv":
+        # Create a tiny dummy array if no real CSVs were found
+        thermal_data = np.zeros((10, 10))
+        rows, cols = 10, 10
+        print("Using empty data state (10x10).")
+        return thermal_data
+        
     try:
         df = pd.read_csv(file_path, header=None, skiprows=10)
         data = df.values.astype(float)
         print(f"Loaded CSV: {file_path}  Shape={data.shape}")
         
         # Update global variables after successful load
-        global thermal_data, rows, cols
         thermal_data = data
         rows, cols = thermal_data.shape
         
         return data
     except Exception as e:
         print("Error loading CSV:", e)
+        # Reset globals on failure
+        thermal_data = None
+        rows, cols = 0, 0
         return None
 
 # Load first CSV initially
-if not load_flir_csv(CSV_FILES[0]) is not None:
-    raise RuntimeError("❌ Cannot run app — initial data failed to load.")
+if not load_flir_csv(CSV_FILES[0]) is not None and CSV_FILES[0] != "default.csv":
+    # Only raise error if a real CSV failed to load and it's not the dummy state
+    if CSV_FILES[0] != "default.csv":
+        raise RuntimeError("❌ Cannot run app — initial data failed to load.")
     
 # -------------------------------------------------------------
-# CREATE FIGURE - MODIFIED SIGNATURE
+# CREATE FIGURE
 # -------------------------------------------------------------
-def create_heatmap(data, min_temp=None, max_temp=None): # Accepts min/max
+def create_heatmap(data, min_temp=None, max_temp=None): 
     """
     Creates a heatmap with optional user-defined color range.
     """
@@ -68,7 +84,7 @@ def create_heatmap(data, min_temp=None, max_temp=None): # Accepts min/max
         color_continuous_scale="Inferno",
         range_color=[min_val, max_val], # Use the determined min/max
         aspect="equal",
-        title="FLIR Thermal Heatmap — Select an Area",
+        title="Thermal Heatmap — Select an Area",
         labels={'x': 'X Pixel', 'y': 'Y Pixel', 'color': 'Temperature'}
     )
     fig.update_layout(dragmode="select", margin=dict(l=10, r=10, t=40, b=10))
@@ -76,13 +92,30 @@ def create_heatmap(data, min_temp=None, max_temp=None): # Accepts min/max
 
 
 # -------------------------------------------------------------
-# DASH APP LAYOUT - MODIFIED TO INCLUDE MIN/MAX INPUTS
+# DASH APP LAYOUT
 # -------------------------------------------------------------
+# Define app and server globally for deployment services (e.g., Render)
 app = Dash(__name__)
 server = app.server
 
 app.layout = html.Div([
-    html.H2("FLIR Thermal Image Analyzer", style={'textAlign': 'center'}),
+    # --- START SIGNATURE BLOCK ---
+    html.Div([
+        html.H2("Thermal Image Analyzer", style={'textAlign': 'left', 'display': 'inline-block', 'marginRight': '20px'}),
+        html.Div(
+            "Made by Zur Lazar Nov, 19th 2025",
+            style={
+                'fontFamily': 'Georgia, serif',
+                'fontSize': '1.0em',
+                'color': '#444',
+                'fontStyle': 'italic',
+                'fontWeight': 'bold',
+                'float': 'right',
+                'paddingTop': '15px'
+            }
+        )
+    ], style={'display': 'flex', 'justifyContent': 'center', 'alignItems': 'baseline', 'width': '80%', 'margin': 'auto'}),
+    # --- END SIGNATURE BLOCK ---
 
     # ---------------------------- CONTROLS ROW ----------------------------
     html.Div([
@@ -162,13 +195,12 @@ def update_file(selected_csv):
 
 
 # -------------------------------------------------------------
-# CALLBACK 2: UPDATE HEATMAP FIGURE BASED ON SCALE INPUTS - REINSTATED
+# CALLBACK 2: UPDATE HEATMAP FIGURE BASED ON SCALE INPUTS
 # -------------------------------------------------------------
 @app.callback(
     Output("thermal-heatmap", "figure", allow_duplicate=True),
     Input("min-temp-input", "value"),
     Input("max-temp-input", "value"),
-    # IMPORTANT: Also trigger when the CSV is loaded (image-size-text is a reliable proxy for CSV change)
     Input("image-size-text", "children"), 
     prevent_initial_call="callback-triggered"
 )
@@ -246,9 +278,8 @@ def display_selected_data(selectedData):
         print("Error calculating region statistics:", e)
         return "❌ Error calculating region statistics."
 
-
 # -------------------------------------------------------------
-# MAIN ENTRY
+# MAIN ENTRY (Removed for deployment)
 # -------------------------------------------------------------
-if __name__ == "__main__":
-    app.run_server(host="127.0.0.1", port=8050, debug=True)
+# The deployment service (like Render) will look for the global 'server' variable
+# and run it. The manual app.run() call is not needed or desired here.
