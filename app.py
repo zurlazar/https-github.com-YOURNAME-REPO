@@ -17,60 +17,66 @@ CSV_FILES = list_csv_files(".")
 if not CSV_FILES:
     raise RuntimeError("❌ No CSV files found in folder.")
 
+# Global variables to store the currently loaded data
+thermal_data = None
+rows = 0
+cols = 0
+
 # -------------------------------------------------------------
 # LOAD DATA
 # -------------------------------------------------------------
 def load_flir_csv(file_path):
     """
     Loads FLIR ResearchIR CSV file into a 2D NumPy array.
+    Updates the global thermal_data and shape variables.
     """
     try:
         df = pd.read_csv(file_path, header=None, skiprows=10)
         data = df.values.astype(float)
         print(f"Loaded CSV: {file_path}  Shape={data.shape}")
+        
+        # Update global variables after successful load
+        global thermal_data, rows, cols
+        thermal_data = data
+        rows, cols = thermal_data.shape
+        
         return data
     except Exception as e:
         print("Error loading CSV:", e)
         return None
 
-# load first CSV initially
-thermal_data = load_flir_csv(CSV_FILES[0])
-# Ensure global variables are set (important for the callbacks)
-global rows, cols
-if thermal_data is not None:
-    rows, cols = thermal_data.shape
-else:
-    # If loading failed, use placeholders to prevent errors
-    rows, cols = 0, 0 
+# Load first CSV initially
+if not load_flir_csv(CSV_FILES[0]) is not None:
+    raise RuntimeError("❌ Cannot run app — initial data failed to load.")
     
 # -------------------------------------------------------------
-# CREATE FIGURE
+# CREATE FIGURE - MODIFIED SIGNATURE
 # -------------------------------------------------------------
-def create_heatmap(data):
+def create_heatmap(data, min_temp=None, max_temp=None): # Accepts min/max
     """
-    Creates a heatmap with auto min/max temperature scaling.
+    Creates a heatmap with optional user-defined color range.
     """
     if data is None or data.size == 0:
         return {} # Return empty figure if no data
         
-    MIN_TEMP = np.nanmin(data)
-    MAX_TEMP = np.nanmax(data)
+    # Use the user-provided min/max, otherwise calculate from data
+    min_val = min_temp if min_temp is not None else np.nanmin(data)
+    max_val = max_temp if max_temp is not None else np.nanmax(data)
 
     fig = px.imshow(
         data,
         color_continuous_scale="Inferno",
-        range_color=[MIN_TEMP, MAX_TEMP],
+        range_color=[min_val, max_val], # Use the determined min/max
         aspect="equal",
         title="FLIR Thermal Heatmap — Select an Area",
         labels={'x': 'X Pixel', 'y': 'Y Pixel', 'color': 'Temperature'}
     )
-    # dragmode="select" enables the standard box selection tool
     fig.update_layout(dragmode="select", margin=dict(l=10, r=10, t=40, b=10))
     return fig
 
 
 # -------------------------------------------------------------
-# DASH APP
+# DASH APP LAYOUT - MODIFIED TO INCLUDE MIN/MAX INPUTS
 # -------------------------------------------------------------
 app = Dash(__name__)
 server = app.server
@@ -78,20 +84,47 @@ server = app.server
 app.layout = html.Div([
     html.H2("FLIR Thermal Image Analyzer", style={'textAlign': 'center'}),
 
-    # ---------------------------- CSV SELECTOR ----------------------------
+    # ---------------------------- CONTROLS ROW ----------------------------
     html.Div([
-        html.Label("Select CSV File:"),
-        dcc.Dropdown(
-            id="csv-selector",
-            options=[{"label": f, "value": f} for f in CSV_FILES],
-            value=CSV_FILES[0],
-            clearable=False
-        )
-    ], style={'width': '40%', 'margin': 'auto'}),
-
+        # CSV Selector
+        html.Div([
+            html.Label("Select CSV File:"),
+            dcc.Dropdown(
+                id="csv-selector",
+                options=[{"label": f, "value": f} for f in CSV_FILES],
+                value=CSV_FILES[0],
+                clearable=False
+            )
+        ], style={'width': '30%', 'display': 'inline-block', 'marginRight': '20px'}),
+        
+        # Minimum Temperature Input
+        html.Div([
+            html.Label("Min Temp Scale:"),
+            dcc.Input(
+                id="min-temp-input",
+                type="number",
+                placeholder="Auto Min",
+                style={'width': '100%'}
+            )
+        ], style={'width': '15%', 'display': 'inline-block', 'marginRight': '20px'}),
+        
+        # Maximum Temperature Input
+        html.Div([
+            html.Label("Max Temp Scale:"),
+            dcc.Input(
+                id="max-temp-input",
+                type="number",
+                placeholder="Auto Max",
+                style={'width': '100%'}
+            )
+        ], style={'width': '15%', 'display': 'inline-block'}),
+        
+    ], style={'textAlign': 'center', 'marginBottom': '20px'}),
+    
     dcc.Graph(
         id="thermal-heatmap",
-        figure=create_heatmap(thermal_data),
+        # Initial figure uses auto min/max (None, None)
+        figure=create_heatmap(thermal_data, None, None), 
         config={"scrollZoom": True, "displayModeBar": True}
     ),
 
@@ -111,29 +144,48 @@ app.layout = html.Div([
 
 
 # -------------------------------------------------------------
-# CALLBACK — CHANGE CSV FILE & UPDATE HEATMAP
+# CALLBACK 1: CHANGE CSV FILE & UPDATE HEATMAP
 # -------------------------------------------------------------
 @app.callback(
-    Output("thermal-heatmap", "figure"),
+    Output("thermal-heatmap", "figure", allow_duplicate=True),
     Output("image-size-text", "children"),
     Input("csv-selector", "value"),
+    prevent_initial_call=True
 )
 def update_file(selected_csv):
-    global thermal_data, rows, cols
-
-    thermal_data = load_flir_csv(selected_csv)
-    # Check for successful load before getting shape
-    if thermal_data is not None:
-        rows, cols = thermal_data.shape
-    else:
-        rows, cols = 0, 0
-
-    fig = create_heatmap(thermal_data)
+    """Loads a new CSV, updates global data, and redraws the heatmap (with auto scale)."""
+    load_flir_csv(selected_csv)
+    
+    # Redraw heatmap with default (auto) min/max scale
+    fig = create_heatmap(thermal_data, None, None) 
     return fig, f"Image size: {cols} × {rows} pixels"
 
 
 # -------------------------------------------------------------
-# CALLBACK — CALCULATE MEAN/STD/MIN/MAX (MODIFIED)
+# CALLBACK 2: UPDATE HEATMAP FIGURE BASED ON SCALE INPUTS - REINSTATED
+# -------------------------------------------------------------
+@app.callback(
+    Output("thermal-heatmap", "figure", allow_duplicate=True),
+    Input("min-temp-input", "value"),
+    Input("max-temp-input", "value"),
+    # IMPORTANT: Also trigger when the CSV is loaded (image-size-text is a reliable proxy for CSV change)
+    Input("image-size-text", "children"), 
+    prevent_initial_call="callback-triggered"
+)
+def update_heatmap_scale(min_val_str, max_val_str, trigger_csv_load):
+    """Redraws the heatmap using the selected or default color scale."""
+    
+    # 1. Convert inputs from string/None to float/None
+    min_temp = float(min_val_str) if min_val_str is not None and min_val_str != '' else None
+    max_temp = float(max_val_str) if max_val_str is not None and max_val_str != '' else None
+    
+    # 2. Re-create the figure using the global thermal_data and the user inputs
+    fig = create_heatmap(thermal_data, min_temp, max_temp)
+    return fig
+
+
+# -------------------------------------------------------------
+# CALLBACK 3: CALCULATE MEAN/STD/MIN/MAX (REGION SELECT)
 # -------------------------------------------------------------
 @app.callback(
     Output("mean-temp-output", "children"),
@@ -147,8 +199,7 @@ def display_selected_data(selectedData):
     try:
         global thermal_data, rows, cols
         
-        # Ensure we have data before slicing
-        if thermal_data is None:
+        if thermal_data is None or rows == 0 or cols == 0:
              return "⚠️ Please load a valid CSV file first."
 
         # Box range extraction (Handles box select, lasso, etc.)
@@ -157,7 +208,7 @@ def display_selected_data(selectedData):
             yr = selectedData["range"]["y"]
             x_min, x_max = int(xr[0]), int(xr[1])
             y_min, y_max = int(yr[0]), int(yr[1])
-        # Points fallback (Handles point/individual selections)
+        # Points fallback
         elif "points" in selectedData and selectedData["points"]:
             xs = [p["x"] for p in selectedData["points"]]
             ys = [p["y"] for p in selectedData["points"]]
@@ -172,31 +223,24 @@ def display_selected_data(selectedData):
         y_min = max(0, int(np.floor(y_min)))
         y_max = min(rows - 1, int(np.ceil(y_max)))
 
-        # Slice the data for the selected region (y_max + 1 to include the last row/column)
         region = thermal_data[y_min:y_max + 1, x_min:x_max + 1]
         
         if region.size == 0:
              return "⚠️ Selected area is zero size."
 
-        # --- MODIFIED: Calculate Std Dev and remove Pixels ---
         mean_val = float(np.nanmean(region))
-        std_val = float(np.nanstd(region)) # Calculate Standard Deviation
+        std_val = float(np.nanstd(region)) 
         min_val = float(np.nanmin(region))
         max_val = float(np.nanmax(region))
-        # pixels = region.size # Removed pixel count calculation
-        # -----------------------------------------------------
 
         print(f"[REGION] mean={mean_val:.3f}, std={std_val:.3f}, min={min_val:.3f}, max={max_val:.3f}")
 
-        # --- MODIFIED OUTPUT FORMAT ---
         return html.Div([
             html.P(f"Mean: {mean_val:.3f}", style={'fontSize': '1.5em'}),
-            html.P(f"Std Dev: {std_val:.3f}", style={'color': 'gray'}), # New line for Std Dev
+            html.P(f"Std Dev: {std_val:.3f}", style={'color': 'gray'}), 
             html.P(f"Min: {min_val:.3f}", style={'color': 'blue'}),
             html.P(f"Max: {max_val:.3f}", style={'color': 'red'}),
-            # Removed: html.P(f"Pixels: {pixels}") 
         ])
-        # ------------------------------
 
     except Exception as e:
         print("Error calculating region statistics:", e)
@@ -207,7 +251,4 @@ def display_selected_data(selectedData):
 # MAIN ENTRY
 # -------------------------------------------------------------
 if __name__ == "__main__":
-    # NOTE: Using 0.0.0.0 is correct for Render deployment but may cause
-    # issues in some local IDE/Jupyter environments. Use 127.0.0.1 for local debugging.
-    # Since you are preparing for GitHub/Render, 0.0.0.0 is the correct final deployment host.
-    app.run_server(host="0.0.0.0", port=8050, debug=True)
+    app.run_server(host="127.0.0.1", port=8050, debug=True)
